@@ -85,6 +85,8 @@ export interface Settings {
   borrow_history_retention_months: number;
   require_student_id: boolean;
   app_version: string;
+  school_logo_url: string | null;
+  categories: string[]; // Array of category names
   updated_at: string;
 }
 
@@ -143,13 +145,15 @@ export async function seedDatabase() {
   const defaultSettings: Settings = {
     id: generateUUID(),
     school_name: 'Springfield Sports Academy',
-    academic_year: '2024-2025',
+    academic_year: '2024',
     overdue_alerts_enabled: true,
     low_stock_warnings_enabled: true,
     email_digest_frequency: 'daily',
     borrow_history_retention_months: 12,
     require_student_id: true,
     app_version: '1.0.0',
+    school_logo_url: null,
+    categories: ['Basketball', 'Football', 'Soccer', 'Tennis', 'Volleyball', 'Other'],
     updated_at: new Date().toISOString(),
   };
 

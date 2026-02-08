@@ -10,8 +10,21 @@ export function InstallPrompt() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [showInstallButton, setShowInstallButton] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
+  const [hasShownIOSInstructions, setHasShownIOSInstructions] = useState(false);
 
   useEffect(() => {
+    // Check if already installed
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+    if (isStandalone) {
+      return; // Don't show button if already installed
+    }
+
+    // Check if user has dismissed iOS instructions
+    const dismissedIOS = localStorage.getItem('ios_install_dismissed');
+    if (dismissedIOS === 'true') {
+      return;
+    }
+
     // Detect iOS/iPad
     const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -26,8 +39,8 @@ export function InstallPrompt() {
 
     window.addEventListener('beforeinstallprompt', handler);
 
-    // For iOS, show button if not already installed
-    if (iOS && !window.matchMedia('(display-mode: standalone)').matches) {
+    // For iOS, show button if not already installed and not dismissed
+    if (iOS && !isStandalone && !dismissedIOS) {
       setShowInstallButton(true);
     }
 
@@ -38,8 +51,13 @@ export function InstallPrompt() {
 
   const handleInstallClick = async () => {
     if (isIOS) {
-      // Show iOS instructions
-      alert('To install this app on your iPad:\n\n1. Tap the Share button (square with arrow)\n2. Scroll down and tap "Add to Home Screen"\n3. Tap "Add"');
+      // Show iOS instructions once, then hide button
+      if (!hasShownIOSInstructions) {
+        alert('To install this app on your iPad:\n\n1. Tap the Share button (square with arrow)\n2. Scroll down and tap "Add to Home Screen"\n3. Tap "Add"');
+        setHasShownIOSInstructions(true);
+        localStorage.setItem('ios_install_dismissed', 'true');
+        setShowInstallButton(false);
+      }
       return;
     }
 
@@ -59,10 +77,12 @@ export function InstallPrompt() {
   return (
     <button
       onClick={handleInstallClick}
-      className="fixed bottom-4 right-4 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 z-50 transition-colors"
+      className="fixed bottom-20 sm:bottom-24 right-4 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 z-40 transition-colors text-sm"
+      style={{ marginBottom: '0' }}
     >
-      <Download size={20} />
-      Install App
+      <Download size={18} />
+      <span className="hidden sm:inline">Install App</span>
+      <span className="sm:hidden">Install</span>
     </button>
   );
 }

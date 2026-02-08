@@ -8,9 +8,9 @@ import { Modal } from '../../components/Modal';
 import { db, generateUUID } from '../../lib/db';
 import { useAuth } from '../../contexts/AuthContext';
 
-const MIN_DURATION = 5; // 5 minutes
-const MAX_DURATION = 480; // 8 hours (end of day)
-const DEFAULT_DURATION = 60; // 1 hour
+const MIN_DURATION = 5;
+const MAX_DURATION = 480;
+const DEFAULT_DURATION = 60;
 
 export function BorrowFlow({ onComplete }: { onComplete: () => void }) {
   const { user } = useAuth();
@@ -23,7 +23,7 @@ export function BorrowFlow({ onComplete }: { onComplete: () => void }) {
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
   const [selectedEquipment, setSelectedEquipment] = useState<string[]>([]);
   const [showBlacklistModal, setShowBlacklistModal] = useState(false);
-  const [selectedDuration, setSelectedDuration] = useState(DEFAULT_DURATION); // Default 1 hour
+  const [selectedDuration, setSelectedDuration] = useState(DEFAULT_DURATION);
 
   useEffect(() => {
     if (step === 'student') loadStudents();
@@ -63,7 +63,6 @@ export function BorrowFlow({ onComplete }: { onComplete: () => void }) {
 
   function filterEquipment() {
     let filtered = equipment;
-    // Exclude lost and damaged items from the borrow flow
     filtered = filtered.filter(e => e.status !== 'lost' && e.status !== 'damaged');
     if (searchQuery) {
       filtered = filtered.filter(e =>
@@ -153,7 +152,6 @@ export function BorrowFlow({ onComplete }: { onComplete: () => void }) {
           created_at: now,
         });
 
-        // Update equipment status
         await db.equipment.update(equipmentId, {
           status: 'borrowed',
           updated_at: now,

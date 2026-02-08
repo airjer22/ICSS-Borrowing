@@ -32,6 +32,7 @@ export function AdminLayout({ children, currentTab, onTabChange }: AdminLayoutPr
   const { isDarkMode, toggleDarkMode } = useDarkMode();
   const [atRiskStudents, setAtRiskStudents] = useState<AtRiskStudent[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [schoolLogo, setSchoolLogo] = useState<string | null>(null);
 
   const tabs = [
     { id: 'home' as const, label: 'Home', icon: Home },
@@ -42,7 +43,39 @@ export function AdminLayout({ children, currentTab, onTabChange }: AdminLayoutPr
 
   useEffect(() => {
     checkAtRiskStudents();
+    loadSchoolLogo();
+
+    // Listen for logo updates from settings page
+    const handleLogoUpdate = () => {
+      loadSchoolLogo();
+    };
+
+    window.addEventListener('logoUpdated', handleLogoUpdate);
+
+    return () => {
+      window.removeEventListener('logoUpdated', handleLogoUpdate);
+    };
   }, []);
+
+  // Reload logo when settings tab is viewed
+  useEffect(() => {
+    if (currentTab === 'settings') {
+      loadSchoolLogo();
+    }
+  }, [currentTab]);
+
+  async function loadSchoolLogo() {
+    try {
+      const settingsList = await db.settings.toArray();
+      if (settingsList.length > 0) {
+        setSchoolLogo(settingsList[0].school_logo_url || null);
+      } else {
+        setSchoolLogo(null);
+      }
+    } catch (error) {
+      console.error('Error loading school logo:', error);
+    }
+  }
 
   async function checkAtRiskStudents() {
     try {
@@ -142,9 +175,19 @@ export function AdminLayout({ children, currentTab, onTabChange }: AdminLayoutPr
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-40 shadow-sm">
         <div className="px-4 py-4 flex items-center justify-between max-w-7xl mx-auto">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full overflow-hidden flex items-center justify-center bg-white dark:bg-gray-700 shadow-sm">
-              <img src="/icss_logo.png" alt="ICSS Logo" className="w-full h-full object-cover" />
-            </div>
+            <button
+              onClick={() => onTabChange('settings')}
+              className="w-8 h-8 sm:w-10 sm:h-10 rounded-full overflow-hidden flex items-center justify-center bg-white dark:bg-gray-700 shadow-sm border-2 border-gray-300 dark:border-gray-600 hover:border-blue-500 transition-colors cursor-pointer"
+              title="Click to upload school logo in Settings"
+            >
+              {schoolLogo ? (
+                <img src={schoolLogo} alt="School Logo" className="w-full h-full object-cover" />
+              ) : (
+                <div className="text-center p-1">
+                  <p className="text-[8px] sm:text-[10px] text-gray-500 dark:text-gray-400 font-medium leading-tight">School Logo Here</p>
+                </div>
+              )}
+            </button>
             <h1 className="text-base sm:text-xl font-bold text-gray-900 dark:text-white truncate">Equipment Management</h1>
           </div>
           <div className="flex items-center gap-2">

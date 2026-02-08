@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Minus, Edit2, Trash2, X, Check, Key, UserPlus, Users } from 'lucide-react';
+import { Plus, Minus, Edit2, Trash2, X, Check, Key, UserPlus, Users, Save } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { Modal } from '../../components/Modal';
@@ -17,6 +17,8 @@ interface Settings {
   borrow_history_retention_months: number;
   require_student_id: boolean;
   app_version: string;
+  school_logo_url: string | null;
+  categories: string[];
 }
 
 interface Category {
@@ -29,6 +31,8 @@ export function AdminSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [formData, setFormData] = useState<Partial<Settings>>({});
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loadingCategories, setLoadingCategories] = useState(true);
   const [editingCategory, setEditingCategory] = useState<string | null>(null);
@@ -57,15 +61,22 @@ export function AdminSettings() {
 
   useEffect(() => {
     loadSettings();
-    loadCategories();
     loadUsers();
   }, []);
+
+  useEffect(() => {
+    if (settings) {
+      loadCategories();
+    }
+  }, [settings]);
 
   async function loadSettings() {
     try {
       const settingsList = await db.settings.toArray();
       if (settingsList.length > 0) {
         setSettings(settingsList[0]);
+        setFormData(settingsList[0]);
+        setHasUnsavedChanges(false);
       }
     } catch (error) {
       console.error('Error loading settings:', error);
@@ -84,42 +95,73 @@ export function AdminSettings() {
         updated_at: new Date().toISOString(),
       });
 
-      setSettings({ ...settings, ...updates } as Settings);
+      const updatedSettings = { ...settings, ...updates } as Settings;
+      setSettings(updatedSettings);
+      setFormData(updatedSettings);
+      setHasUnsavedChanges(false);
+
+      // Dispatch event if logo was updated
+      if ('school_logo_url' in updates) {
+        window.dispatchEvent(new CustomEvent('logoUpdated'));
+      }
     } catch (error) {
       console.error('Error updating settings:', error);
+      alert('Failed to save settings');
     } finally {
       setSaving(false);
     }
   }
 
+  function handleFormChange(field: keyof Settings, value: any) {
+    if (!settings) return;
+    setFormData(prev => ({ ...prev, [field]: value }));
+    setHasUnsavedChanges(true);
+  }
+
+  async function handleSave() {
+    if (!settings || !hasUnsavedChanges) return;
+    await updateSettings(formData);
+  }
+
   function incrementRetention() {
     if (settings) {
-      updateSettings({
-        borrow_history_retention_months: settings.borrow_history_retention_months + 1,
-      });
+      const currentValue = formData.borrow_history_retention_months ?? settings.borrow_history_retention_months;
+      handleFormChange('borrow_history_retention_months', currentValue + 1);
     }
   }
 
   function decrementRetention() {
-    if (settings && settings.borrow_history_retention_months > 1) {
-      updateSettings({
-        borrow_history_retention_months: settings.borrow_history_retention_months - 1,
-      });
+    if (settings) {
+      const currentValue = formData.borrow_history_retention_months ?? settings.borrow_history_retention_months;
+      if (currentValue > 1) {
+        handleFormChange('borrow_history_retention_months', currentValue - 1);
+      }
     }
   }
 
   async function loadCategories() {
     try {
-      const equipment = await db.equipment.toArray();
+      if (!settings) return;
 
+      // Get categories from settings (persisted list)
+      const savedCategories = settings.categories || [];
+      
+      // Get categories from equipment (with counts)
+      const equipment = await db.equipment.toArray();
       const categoryCounts = equipment.reduce((acc: Record<string, number>, item) => {
         const cat = item.category || 'Uncategorized';
         acc[cat] = (acc[cat] || 0) + 1;
         return acc;
       }, {});
 
-      const categoryList: Category[] = Object.entries(categoryCounts)
-        .map(([name, count]) => ({ name, count }))
+      // Combine saved categories with equipment categories
+      const allCategoryNames = new Set([...savedCategories, ...Object.keys(categoryCounts)]);
+      
+      const categoryList: Category[] = Array.from(allCategoryNames)
+        .map(name => ({ 
+          name, 
+          count: categoryCounts[name] || 0 
+        }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
       setCategories(categoryList);
@@ -131,7 +173,7 @@ export function AdminSettings() {
   }
 
   async function handleAddCategory() {
-    if (!newCategory.trim()) return;
+    if (!newCategory.trim() || !settings) return;
 
     try {
       const categoryExists = categories.some(
@@ -143,11 +185,17 @@ export function AdminSettings() {
         return;
       }
 
-      setCategories([...categories, { name: newCategory.trim(), count: 0 }].sort((a, b) => a.name.localeCompare(b.name)));
+      // Add to settings categories array
+      const updatedCategories = [...(settings.categories || []), newCategory.trim()];
+      await updateSettings({ categories: updatedCategories });
+
+      // Reload categories to update UI
+      await loadCategories();
       setNewCategory('');
       setShowAddCategory(false);
     } catch (error) {
       console.error('Error adding category:', error);
+      alert('Failed to add category');
     }
   }
 
@@ -184,14 +232,20 @@ export function AdminSettings() {
   async function handleDeleteCategory(categoryName: string) {
     const category = categories.find(c => c.name === categoryName);
 
-    if (!category) return;
+    if (!category || !settings) return;
 
     if (category.count > 0) {
       alert(`Cannot delete "${categoryName}" because it has ${category.count} item(s). Please reassign or delete those items first.`);
+      setDeletingCategory(null);
       return;
     }
 
-    setCategories(categories.filter(c => c.name !== categoryName));
+    // Remove from settings categories array
+    const updatedCategories = (settings.categories || []).filter(c => c !== categoryName);
+    await updateSettings({ categories: updatedCategories });
+
+    // Reload categories to update UI
+    await loadCategories();
     setDeletingCategory(null);
   }
 
@@ -422,7 +476,24 @@ export function AdminSettings() {
     <div className="space-y-4 sm:space-y-6 pb-8">
       <div className="flex flex-col xs:flex-row xs:items-center justify-between gap-2">
         <h2 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">Settings</h2>
-        {saving && <span className="text-xs sm:text-sm text-blue-600 dark:text-blue-400">Saving...</span>}
+        <div className="flex items-center gap-2">
+          {hasUnsavedChanges && (
+            <span className="text-xs sm:text-sm text-orange-600 dark:text-orange-400 font-medium">
+              Unsaved changes
+            </span>
+          )}
+          {saving && <span className="text-xs sm:text-sm text-blue-600 dark:text-blue-400">Saving...</span>}
+          <Button
+            onClick={handleSave}
+            disabled={!hasUnsavedChanges || saving}
+            variant="primary"
+            size="sm"
+            className="flex items-center gap-1.5"
+          >
+            <Save className="w-4 h-4" />
+            <span>Save Changes</span>
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -430,12 +501,71 @@ export function AdminSettings() {
         <div className="space-y-3 sm:space-y-4">
           <div>
             <label className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">
+              School Logo
+            </label>
+            <div className="flex items-center gap-4">
+              <label htmlFor="logo-upload" className="cursor-pointer">
+                <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full overflow-hidden flex items-center justify-center bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 hover:border-blue-500 transition-colors">
+                  {settings.school_logo_url ? (
+                    <img 
+                      src={settings.school_logo_url} 
+                      alt="School Logo" 
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="text-center p-2">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">School Logo Here</p>
+                    </div>
+                  )}
+                </div>
+              </label>
+              <div className="flex-1">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      const { uploadImage } = await import('../../lib/imageStorage');
+                      const logoUrl = await uploadImage(file);
+                      await updateSettings({ school_logo_url: logoUrl });
+                    } catch (error: any) {
+                      alert(error.message || 'Failed to upload logo');
+                    }
+                  }}
+                  className="hidden"
+                  id="logo-upload"
+                />
+                <label
+                  htmlFor="logo-upload"
+                  className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg cursor-pointer text-sm font-medium transition-colors"
+                >
+                  {settings.school_logo_url ? 'Change Logo' : 'Upload Logo'}
+                </label>
+                {settings.school_logo_url && (
+                  <button
+                    onClick={async () => {
+                      if (confirm('Remove school logo?')) {
+                        await updateSettings({ school_logo_url: null });
+                      }
+                    }}
+                    className="ml-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">
               School Name
             </label>
             <input
               type="text"
-              value={settings.school_name}
-              onChange={(e) => updateSettings({ school_name: e.target.value })}
+              value={formData.school_name ?? settings.school_name ?? ''}
+              onChange={(e) => handleFormChange('school_name', e.target.value)}
               className="w-full px-3 sm:px-4 py-2 text-sm sm:text-base border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
@@ -445,13 +575,13 @@ export function AdminSettings() {
             </label>
             <input
               type="text"
-              value={settings.academic_year}
-              onChange={(e) => updateSettings({ academic_year: e.target.value })}
-              placeholder="e.g., 2024-2025"
+              value={formData.academic_year ?? settings.academic_year ?? ''}
+              onChange={(e) => handleFormChange('academic_year', e.target.value)}
+              placeholder="e.g., 2024"
               className="w-full px-3 sm:px-4 py-2 text-sm sm:text-base border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Enter the academic year in format YYYY-YYYY (e.g., 2024-2025)
+              Enter the academic year (e.g., 2024)
             </p>
           </div>
         </div>
@@ -627,13 +757,13 @@ export function AdminSettings() {
             </div>
             <button
               onClick={() =>
-                updateSettings({ overdue_alerts_enabled: !settings.overdue_alerts_enabled })
+                handleFormChange('overdue_alerts_enabled', !(formData.overdue_alerts_enabled ?? settings.overdue_alerts_enabled))
               }
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.overdue_alerts_enabled ? 'bg-blue-600' : 'bg-gray-300'
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${(formData.overdue_alerts_enabled ?? settings.overdue_alerts_enabled) ? 'bg-blue-600' : 'bg-gray-300'
                 }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${settings.overdue_alerts_enabled ? 'translate-x-6' : 'translate-x-1'
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${(formData.overdue_alerts_enabled ?? settings.overdue_alerts_enabled) ? 'translate-x-6' : 'translate-x-1'
                   }`}
               />
             </button>
@@ -646,15 +776,13 @@ export function AdminSettings() {
             </div>
             <button
               onClick={() =>
-                updateSettings({
-                  low_stock_warnings_enabled: !settings.low_stock_warnings_enabled,
-                })
+                handleFormChange('low_stock_warnings_enabled', !(formData.low_stock_warnings_enabled ?? settings.low_stock_warnings_enabled))
               }
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.low_stock_warnings_enabled ? 'bg-blue-600' : 'bg-gray-300'
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${(formData.low_stock_warnings_enabled ?? settings.low_stock_warnings_enabled) ? 'bg-blue-600' : 'bg-gray-300'
                 }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${settings.low_stock_warnings_enabled ? 'translate-x-6' : 'translate-x-1'
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${(formData.low_stock_warnings_enabled ?? settings.low_stock_warnings_enabled) ? 'translate-x-6' : 'translate-x-1'
                   }`}
               />
             </button>
@@ -666,8 +794,8 @@ export function AdminSettings() {
             </label>
             <div className="flex gap-2">
               <button
-                onClick={() => updateSettings({ email_digest_frequency: 'daily' })}
-                className={`flex-1 py-2 px-3 sm:px-4 rounded-lg text-xs sm:text-sm font-medium transition-colors ${settings.email_digest_frequency === 'daily'
+                onClick={() => handleFormChange('email_digest_frequency', 'daily')}
+                className={`flex-1 py-2 px-3 sm:px-4 rounded-lg text-xs sm:text-sm font-medium transition-colors ${(formData.email_digest_frequency ?? settings.email_digest_frequency) === 'daily'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                   }`}
@@ -675,8 +803,8 @@ export function AdminSettings() {
                 Daily
               </button>
               <button
-                onClick={() => updateSettings({ email_digest_frequency: 'weekly' })}
-                className={`flex-1 py-2 px-3 sm:px-4 rounded-lg text-xs sm:text-sm font-medium transition-colors ${settings.email_digest_frequency === 'weekly'
+                onClick={() => handleFormChange('email_digest_frequency', 'weekly')}
+                className={`flex-1 py-2 px-3 sm:px-4 rounded-lg text-xs sm:text-sm font-medium transition-colors ${(formData.email_digest_frequency ?? settings.email_digest_frequency) === 'weekly'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                   }`}
@@ -705,7 +833,7 @@ export function AdminSettings() {
               </button>
               <div className="flex-1 text-center">
                 <p className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">
-                  {settings.borrow_history_retention_months}
+                  {formData.borrow_history_retention_months ?? settings.borrow_history_retention_months}
                 </p>
                 <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400">months</p>
               </div>
@@ -725,13 +853,13 @@ export function AdminSettings() {
             </div>
             <button
               onClick={() =>
-                updateSettings({ require_student_id: !settings.require_student_id })
+                handleFormChange('require_student_id', !(formData.require_student_id ?? settings.require_student_id))
               }
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.require_student_id ? 'bg-blue-600' : 'bg-gray-300'
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${(formData.require_student_id ?? settings.require_student_id) ? 'bg-blue-600' : 'bg-gray-300'
                 }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${settings.require_student_id ? 'translate-x-6' : 'translate-x-1'
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${(formData.require_student_id ?? settings.require_student_id) ? 'translate-x-6' : 'translate-x-1'
                   }`}
               />
             </button>
