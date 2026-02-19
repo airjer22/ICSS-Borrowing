@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { X, CheckCircle, AlertTriangle, Clock } from 'lucide-react';
+import { X, CheckCircle, AlertTriangle, Clock, Edit2, Trash2, ChevronRight } from 'lucide-react';
 import { Modal } from './Modal';
 import { Avatar } from './Avatar';
-import { db } from '../lib/db';
+import { Button } from './Button';
+import { Toast } from './Toast';
+import { db, calculateTrustScore } from '../lib/db';
 
 interface StudentProfileModalProps {
   isOpen: boolean;
@@ -37,6 +39,12 @@ export function StudentProfileModal({ isOpen, onClose, student }: StudentProfile
   });
   const [recentActivity, setRecentActivity] = useState<LoanActivity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedLoan, setSelectedLoan] = useState<LoanActivity | null>(null);
+  const [showLoanActionModal, setShowLoanActionModal] = useState(false);
+  const [loanActionMode, setLoanActionMode] = useState<'view' | 'edit'>('view');
+  const [editDueAt, setEditDueAt] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   useEffect(() => {
     if (isOpen && student) {
@@ -125,6 +133,113 @@ export function StudentProfileModal({ isOpen, onClose, student }: StudentProfile
     const diffTime = today.getTime() - date.getTime();
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     return diffDays;
+  }
+
+  function handleLoanClick(activity: LoanActivity) {
+    setSelectedLoan(activity);
+    setEditDueAt(activity.due_at.split('T')[0]);
+    setLoanActionMode('view');
+    setShowDeleteConfirm(false);
+    setShowLoanActionModal(true);
+  }
+
+  async function handleEditLoan() {
+    if (!selectedLoan) return;
+    try {
+      const newDueAt = new Date(editDueAt).toISOString();
+      const now = new Date();
+      const isOverdue = !selectedLoan.returned_at && new Date(newDueAt) < now;
+
+      await db.loans.update(selectedLoan.id, {
+        due_at: newDueAt,
+        is_overdue: isOverdue,
+        status: selectedLoan.returned_at ? 'returned' : isOverdue ? 'overdue' : 'active',
+      });
+
+      // Recalculate trust score
+      const newTrustScore = await calculateTrustScore(student.id);
+      await db.students.update(student.id, {
+        trust_score: newTrustScore,
+        updated_at: new Date().toISOString(),
+      });
+
+      setToast({ message: 'Loan entry updated successfully', type: 'success' });
+      setShowLoanActionModal(false);
+      setSelectedLoan(null);
+      loadStudentData();
+    } catch (error) {
+      console.error('Error updating loan:', error);
+      setToast({ message: 'Failed to update loan entry', type: 'error' });
+    }
+  }
+
+  async function handleMarkReturned() {
+    if (!selectedLoan) return;
+    try {
+      const now = new Date().toISOString();
+      await db.loans.update(selectedLoan.id, {
+        returned_at: now,
+        status: 'returned',
+        is_overdue: false,
+      });
+
+      // Update equipment status back to available
+      const loan = await db.loans.get(selectedLoan.id);
+      if (loan) {
+        await db.equipment.update(loan.equipment_id, {
+          status: 'available',
+          updated_at: now,
+        });
+      }
+
+      // Recalculate trust score
+      const newTrustScore = await calculateTrustScore(student.id);
+      await db.students.update(student.id, {
+        trust_score: newTrustScore,
+        updated_at: now,
+      });
+
+      setToast({ message: 'Loan marked as returned', type: 'success' });
+      setShowLoanActionModal(false);
+      setSelectedLoan(null);
+      loadStudentData();
+    } catch (error) {
+      console.error('Error marking loan as returned:', error);
+      setToast({ message: 'Failed to mark loan as returned', type: 'error' });
+    }
+  }
+
+  async function handleDeleteLoan() {
+    if (!selectedLoan) return;
+    try {
+      const loan = await db.loans.get(selectedLoan.id);
+
+      // If the loan was active/overdue, set equipment back to available
+      if (loan && !loan.returned_at) {
+        await db.equipment.update(loan.equipment_id, {
+          status: 'available',
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      await db.loans.delete(selectedLoan.id);
+
+      // Recalculate trust score
+      const newTrustScore = await calculateTrustScore(student.id);
+      await db.students.update(student.id, {
+        trust_score: newTrustScore,
+        updated_at: new Date().toISOString(),
+      });
+
+      setToast({ message: 'Loan entry deleted successfully', type: 'success' });
+      setShowLoanActionModal(false);
+      setShowDeleteConfirm(false);
+      setSelectedLoan(null);
+      loadStudentData();
+    } catch (error) {
+      console.error('Error deleting loan:', error);
+      setToast({ message: 'Failed to delete loan entry', type: 'error' });
+    }
   }
 
   if (!student) return null;
@@ -244,6 +359,7 @@ export function StudentProfileModal({ isOpen, onClose, student }: StudentProfile
                   return (
                     <div
                       key={activity.id}
+                      onClick={() => handleLoanClick(activity)}
                       className={`bg-white rounded-xl border-l-4 ${
                         wasReturnedLate
                           ? 'border-orange-500'
@@ -252,7 +368,7 @@ export function StudentProfileModal({ isOpen, onClose, student }: StudentProfile
                           : isCurrentlyOverdue
                           ? 'border-red-500'
                           : 'border-blue-500'
-                      } p-4 shadow-sm`}
+                      } p-4 shadow-sm cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]`}
                     >
                       <div className="flex items-start gap-3">
                         <div
@@ -300,16 +416,19 @@ export function StudentProfileModal({ isOpen, onClose, student }: StudentProfile
                             <p className="text-sm text-gray-600">Due: {formatDate(activity.due_at)}</p>
                           )}
                         </div>
-                        {isCurrentlyOverdue && (
-                          <span className="px-2 py-1 bg-red-100 text-red-800 text-xs font-semibold rounded">
-                            OVERDUE
-                          </span>
-                        )}
-                        {wasReturnedLate && (
-                          <span className="px-2 py-1 bg-orange-100 text-orange-800 text-xs font-semibold rounded">
-                            LATE
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {isCurrentlyOverdue && (
+                            <span className="px-2 py-1 bg-red-100 text-red-800 text-xs font-semibold rounded">
+                              OVERDUE
+                            </span>
+                          )}
+                          {wasReturnedLate && (
+                            <span className="px-2 py-1 bg-orange-100 text-orange-800 text-xs font-semibold rounded">
+                              LATE
+                            </span>
+                          )}
+                          <ChevronRight className="w-4 h-4 text-gray-400" />
+                        </div>
                       </div>
                     </div>
                   );
@@ -319,6 +438,159 @@ export function StudentProfileModal({ isOpen, onClose, student }: StudentProfile
           </div>
         </div>
       </div>
+
+      {/* Loan Action Modal */}
+      {showLoanActionModal && selectedLoan && (
+        <div className="fixed inset-0 z-[200] flex items-start justify-center overflow-y-auto py-4">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setShowLoanActionModal(false)} />
+          <div className="relative bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md mx-4 my-auto overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                {loanActionMode === 'edit' ? 'Edit Loan Entry' : 'Loan Details'}
+              </h3>
+              <button
+                onClick={() => setShowLoanActionModal(false)}
+                className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              {/* Loan Info */}
+              <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 space-y-2">
+                <p className="font-semibold text-gray-900 dark:text-white">
+                  {selectedLoan.equipment_name} ({selectedLoan.equipment_id_display})
+                </p>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Borrowed: {new Date(selectedLoan.borrowed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </p>
+                {selectedLoan.returned_at && (
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    Returned: {new Date(selectedLoan.returned_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </p>
+                )}
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Status: <span className={`font-medium ${
+                    selectedLoan.status === 'returned' ? 'text-green-600' :
+                    selectedLoan.is_overdue ? 'text-red-600' : 'text-blue-600'
+                  }`}>
+                    {selectedLoan.is_overdue ? 'Overdue' : selectedLoan.status.charAt(0).toUpperCase() + selectedLoan.status.slice(1)}
+                  </span>
+                </p>
+              </div>
+
+              {loanActionMode === 'view' && !showDeleteConfirm && (
+                <div className="space-y-2">
+                  <button
+                    onClick={() => setLoanActionMode('edit')}
+                    className="w-full flex items-center gap-3 px-4 py-3 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+                  >
+                    <Edit2 className="w-5 h-5" />
+                    <div className="text-left">
+                      <p className="font-medium">Edit Entry</p>
+                      <p className="text-xs text-blue-600 dark:text-blue-400">Change due date or mark as returned</p>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="w-full flex items-center gap-3 px-4 py-3 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                    <div className="text-left">
+                      <p className="font-medium">Delete Entry</p>
+                      <p className="text-xs text-red-600 dark:text-red-400">Remove this loan record entirely</p>
+                    </div>
+                  </button>
+                </div>
+              )}
+
+              {loanActionMode === 'edit' && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Due Date
+                    </label>
+                    <input
+                      type="date"
+                      value={editDueAt}
+                      onChange={(e) => setEditDueAt(e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                    />
+                  </div>
+
+                  {!selectedLoan.returned_at && (
+                    <button
+                      onClick={handleMarkReturned}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/50 transition-colors font-medium"
+                    >
+                      <CheckCircle className="w-5 h-5" />
+                      Mark as Returned Now
+                    </button>
+                  )}
+
+                  <div className="flex gap-3 pt-1">
+                    <Button
+                      variant="secondary"
+                      fullWidth
+                      onClick={() => setLoanActionMode('view')}
+                    >
+                      Back
+                    </Button>
+                    <Button
+                      variant="primary"
+                      fullWidth
+                      onClick={handleEditLoan}
+                    >
+                      Save Changes
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {showDeleteConfirm && (
+                <div className="space-y-3">
+                  <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-lg p-3">
+                    <p className="text-sm text-red-800 dark:text-red-200 font-medium">
+                      Are you sure you want to delete this loan entry? This action cannot be undone.
+                    </p>
+                    {!selectedLoan.returned_at && (
+                      <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                        The equipment will be marked as available again.
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex gap-3">
+                    <Button
+                      variant="secondary"
+                      fullWidth
+                      onClick={() => setShowDeleteConfirm(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="danger"
+                      fullWidth
+                      onClick={handleDeleteLoan}
+                    >
+                      Delete Entry
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          isOpen={!!toast}
+          onClose={() => setToast(null)}
+        />
+      )}
     </Modal>
   );
 }
