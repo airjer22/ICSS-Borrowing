@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Plus, Edit2, Trash2, Upload, X, Image as ImageIcon } from 'lucide-react';
+import { Plus, Edit2, Trash2, Upload, X, Image as ImageIcon, History, Clock, CheckCircle, AlertTriangle } from 'lucide-react';
 import { SearchBar } from '../../components/SearchBar';
 import { FilterPills } from '../../components/FilterPills';
 import { StatusBadge } from '../../components/StatusBadge';
 import { Modal } from '../../components/Modal';
 import { Button } from '../../components/Button';
-import { db, generateUUID, EquipmentItem } from '../../lib/db';
+import { db, generateUUID, EquipmentItem, Loan } from '../../lib/db';
 import { uploadImage } from '../../lib/imageStorage';
 import { Toast } from '../../components/Toast';
 
@@ -31,6 +31,10 @@ export function AdminInventory() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [historyItem, setHistoryItem] = useState<EquipmentItem | null>(null);
+  const [loanHistory, setLoanHistory] = useState<(Loan & { student_name: string; student_class: string | null })[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   useEffect(() => {
     loadItems();
@@ -221,6 +225,42 @@ export function AdminInventory() {
     setShowAddModal(true);
   }
 
+  async function handleViewHistory(item: EquipmentItem) {
+    setHistoryItem(item);
+    setShowHistoryModal(true);
+    setHistoryLoading(true);
+
+    try {
+      const loans = await db.loans
+        .where('equipment_id')
+        .equals(item.id)
+        .toArray();
+
+      // Sort by most recent first
+      loans.sort((a, b) =>
+        new Date(b.borrowed_at).getTime() - new Date(a.borrowed_at).getTime()
+      );
+
+      // Get student details for each loan
+      const loansWithStudents = await Promise.all(
+        loans.map(async (loan) => {
+          const student = await db.students.get(loan.student_id);
+          return {
+            ...loan,
+            student_name: student?.full_name || 'Unknown Student',
+            student_class: student?.class_name || null,
+          };
+        })
+      );
+
+      setLoanHistory(loansWithStudents);
+    } catch (error) {
+      console.error('Error loading loan history:', error);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
   const statusOptions = ['All', 'Available', 'Borrowed', 'Reserved', 'Lost or Damaged'];
 
   if (loading) {
@@ -256,7 +296,10 @@ export function AdminInventory() {
           
           return (
             <div key={item.id} className={`bg-white rounded-lg shadow-md overflow-hidden ${item.status === 'lost' || item.status === 'damaged' ? 'opacity-75' : ''}`}>
-              <div className="relative aspect-square bg-gray-100">
+              <div
+                className="relative aspect-square bg-gray-100 cursor-pointer"
+                onClick={() => handleViewHistory(item)}
+              >
                 {item.image_url ? (
                   <img
                     src={item.image_url}
@@ -275,9 +318,12 @@ export function AdminInventory() {
                     size="sm"
                   />
                 </div>
+                <div className="absolute bottom-1.5 right-1.5 w-6 h-6 bg-white/80 rounded-full flex items-center justify-center">
+                  <History className="w-3.5 h-3.5 text-gray-600" />
+                </div>
               </div>
               <div className="p-2 space-y-1.5">
-                <div>
+                <div className="cursor-pointer" onClick={() => handleViewHistory(item)}>
                   <h3 className="font-semibold text-gray-900 text-xs truncate">{item.name}</h3>
                   <p className="text-xs text-gray-500 truncate">ID: {item.item_id}</p>
                 </div>
@@ -459,6 +505,106 @@ export function AdminInventory() {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={showHistoryModal}
+        onClose={() => {
+          setShowHistoryModal(false);
+          setHistoryItem(null);
+          setLoanHistory([]);
+        }}
+        title={historyItem ? `${historyItem.name} - Loan History` : 'Loan History'}
+        size="md"
+      >
+        {historyLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+          </div>
+        ) : loanHistory.length === 0 ? (
+          <div className="py-8 text-center">
+            <Clock className="w-12 h-12 text-gray-300 mx-auto mb-2" />
+            <p className="text-gray-500 text-sm">No loan history for this item</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-gray-500 dark:text-gray-400 uppercase font-semibold tracking-wide">
+              {loanHistory.length} loan record{loanHistory.length !== 1 ? 's' : ''}
+            </p>
+            {loanHistory.map((loan, index) => {
+              const wasReturnedLate = loan.returned_at && new Date(loan.returned_at) > new Date(loan.due_at);
+              const isCurrentlyOverdue = !loan.returned_at && (loan.is_overdue || loan.status === 'overdue');
+              const isActive = !loan.returned_at && !isCurrentlyOverdue;
+
+              return (
+                <div
+                  key={loan.id}
+                  className={`bg-gray-50 dark:bg-gray-700 rounded-lg p-3 border-l-4 ${
+                    index === 0 && !loan.returned_at
+                      ? 'border-blue-500 ring-1 ring-blue-200 dark:ring-blue-800'
+                      : wasReturnedLate
+                      ? 'border-orange-400'
+                      : isCurrentlyOverdue
+                      ? 'border-red-500'
+                      : loan.returned_at
+                      ? 'border-green-400'
+                      : 'border-blue-400'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                        isCurrentlyOverdue
+                          ? 'bg-red-100 dark:bg-red-900/30'
+                          : wasReturnedLate
+                          ? 'bg-orange-100 dark:bg-orange-900/30'
+                          : loan.returned_at
+                          ? 'bg-green-100 dark:bg-green-900/30'
+                          : 'bg-blue-100 dark:bg-blue-900/30'
+                      }`}
+                    >
+                      {isCurrentlyOverdue ? (
+                        <AlertTriangle className="w-4 h-4 text-red-600" />
+                      ) : wasReturnedLate ? (
+                        <AlertTriangle className="w-4 h-4 text-orange-600" />
+                      ) : loan.returned_at ? (
+                        <CheckCircle className="w-4 h-4 text-green-600" />
+                      ) : (
+                        <Clock className="w-4 h-4 text-blue-600" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">
+                        {loan.student_name}
+                      </p>
+                      {loan.student_class && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400">{loan.student_class}</p>
+                      )}
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        Borrowed: {new Date(loan.borrowed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </p>
+                      {loan.returned_at ? (
+                        <p className={`text-xs mt-0.5 ${wasReturnedLate ? 'text-orange-600' : 'text-green-600'}`}>
+                          Returned: {new Date(loan.returned_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          {wasReturnedLate && ' (Late)'}
+                        </p>
+                      ) : (
+                        <p className={`text-xs mt-0.5 font-medium ${isCurrentlyOverdue ? 'text-red-600' : 'text-blue-600'}`}>
+                          {isCurrentlyOverdue ? 'OVERDUE' : isActive ? 'Currently borrowed' : loan.status}
+                        </p>
+                      )}
+                    </div>
+                    {index === 0 && !loan.returned_at && (
+                      <span className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-semibold rounded flex-shrink-0">
+                        CURRENT
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Modal>
 
       <Toast

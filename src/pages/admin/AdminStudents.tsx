@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { SearchBar } from '../../components/SearchBar';
+import { FilterPills } from '../../components/FilterPills';
 import { Avatar } from '../../components/Avatar';
 import { StatusBadge } from '../../components/StatusBadge';
 import { Button } from '../../components/Button';
@@ -26,6 +27,7 @@ export function AdminStudents() {
   const [profileStudent, setProfileStudent] = useState<Student | null>(null);
   const [selectedStudents, setSelectedStudents] = useState<Set<string>>(new Set());
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+  const [studentFilter, setStudentFilter] = useState('All');
 
   const [manualForm, setManualForm] = useState({
     full_name: '',
@@ -45,7 +47,7 @@ export function AdminStudents() {
 
   useEffect(() => {
     filterStudents();
-  }, [students, searchQuery]);
+  }, [students, searchQuery, studentFilter, overdueStudents]);
 
   async function loadStudents() {
     try {
@@ -85,8 +87,20 @@ export function AdminStudents() {
       );
     }
 
+    if (studentFilter === 'Overdue') {
+      filtered = filtered.filter((student) => overdueStudents.has(student.id));
+    } else if (studentFilter === 'Suspended') {
+      filtered = filtered.filter((student) => student.is_blacklisted);
+    }
+
     setFilteredStudents(filtered);
   }
+
+  const filterCounts: Record<string, number> = {
+    All: students.length,
+    Overdue: students.filter((s) => overdueStudents.has(s.id)).length,
+    Suspended: students.filter((s) => s.is_blacklisted).length,
+  };
 
   function openBlacklistModal(student: Student) {
     setSelectedStudent(student);
@@ -379,6 +393,13 @@ export function AdminStudents() {
         value={searchQuery}
         onChange={setSearchQuery}
         placeholder="Search name or class..."
+      />
+
+      <FilterPills
+        options={['All', 'Overdue', 'Suspended']}
+        selected={studentFilter}
+        onChange={setStudentFilter}
+        counts={filterCounts}
       />
 
       {filteredStudents.length === 0 ? (
